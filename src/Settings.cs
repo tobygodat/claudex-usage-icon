@@ -5,8 +5,6 @@ namespace ClaudexUsage;
 sealed class AppSettings
 {
     public bool ShowRemaining { get; set; }
-    /// <summary>"square" = number on a full-bleed tile; "logo" = number inside a logo-shaped badge; "plain" = number only; "two-rows" = plain 5h over 7d.</summary>
-    public string IconStyle { get; set; } = "square";
     /// <summary>
     /// Seconds between polls. The usage endpoints are meant for on-demand reads and return HTTP 429
     /// when hit every minute, so the floor is 5 minutes.

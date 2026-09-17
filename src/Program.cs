@@ -12,6 +12,14 @@ static class Program
             return;
         }
 
+        // Debug helper: show the right-click menu over sample data, save a screenshot of it, and exit.
+        if (args.Length >= 2 && args[0] == "--render-menu")
+        {
+            ApplicationConfiguration.Initialize();
+            Application.Run(new TrayApp(menuShot: args[1]));
+            return;
+        }
+
         // Debug helper: fetch both services once and write a plain-text report (no secrets) to a file.
         if (args.Length >= 2 && args[0] == "--dump")
         {
