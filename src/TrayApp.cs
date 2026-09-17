@@ -16,6 +16,8 @@ sealed class TrayApp : ApplicationContext
         public Icon? Current { get; set; }
         /// <summary>After an HTTP 429 we stop polling this service until this time.</summary>
         public DateTimeOffset BackoffUntil { get; set; } = DateTimeOffset.MinValue;
+        /// <summary>Consecutive 429s; each one doubles the pause (5, 10, 20, 40, 60 min cap). Reset by any other result.</summary>
+        public int Strikes { get; set; }
     }
 
     readonly AppSettings settings = AppSettings.Load();
@@ -41,7 +43,7 @@ sealed class TrayApp : ApplicationContext
         timer.Interval = 300;
         timer.Tick += async (_, _) =>
         {
-            timer.Interval = Math.Max(15, settings.PollSeconds) * 1000;
+            timer.Interval = Math.Max(AppSettings.MinPollSeconds, settings.PollSeconds) * 1000;
             await RefreshAllAsync();
         };
         timer.Start();
@@ -83,12 +85,22 @@ sealed class TrayApp : ApplicationContext
             for (int i = 0; i < slots.Count; i++)
             {
                 if (results[i] is not UsageSnapshot snap) continue; // still backing off; keep last icon
-                if (snap.Error is not null && snap.Error.StartsWith("HTTP 429"))
+                var slot = slots[i];
+                if (snap.RateLimited)
                 {
-                    slots[i].BackoffUntil = DateTimeOffset.Now.AddMinutes(5);
-                    snap = new UsageSnapshot { Service = snap.Service, Plan = snap.Plan, Error = "rate limited; retrying in 5 min" };
+                    // Exponential backoff, never shorter than what the server's Retry-After asked for.
+                    var wait = TimeSpan.FromMinutes(Math.Min(60, 5 << Math.Min(slot.Strikes, 4)));
+                    if (snap.RetryAfter > wait) wait = snap.RetryAfter;
+                    slot.Strikes++;
+                    slot.BackoffUntil = DateTimeOffset.Now + wait;
+                    snap = new UsageSnapshot
+                    {
+                        Service = snap.Service, Plan = snap.Plan, RateLimited = true, RetryAfter = snap.RetryAfter,
+                        Error = $"rate limited; next try at {Fmt.Clock(slot.BackoffUntil)}",
+                    };
                 }
-                slots[i].Last = snap;
+                else slot.Strikes = 0;
+                slot.Last = snap;
                 UpdateIcon(slots[i]);
             }
             details?.RefreshContents();
@@ -286,7 +298,7 @@ sealed class TrayApp : ApplicationContext
         menu.Items.Add(icons);
 
         var interval = new ToolStripMenuItem("Refresh every");
-        foreach (var (label, secs) in new[] { ("30 seconds", 30), ("1 minute", 60), ("2 minutes", 120), ("5 minutes", 300) })
+        foreach (var (label, secs) in new[] { ("5 minutes", 300), ("10 minutes", 600), ("15 minutes", 900), ("30 minutes", 1800) })
         {
             var item = new ToolStripMenuItem(label) { Checked = settings.PollSeconds == secs };
             int captured = secs;

@@ -41,6 +41,19 @@ static class JsonFiles
     }
 }
 
+/// <summary>Outcome of one usage GET: status, body, and how long the server asked us to wait (zero if it did not say).</summary>
+sealed record UsageResponse(HttpStatusCode Status, string Body, TimeSpan RetryAfter)
+{
+    public static async Task<UsageResponse> ReadAsync(HttpResponseMessage resp, CancellationToken ct)
+    {
+        var ra = resp.Headers.RetryAfter;
+        TimeSpan wait = ra?.Delta
+                        ?? (ra?.Date is DateTimeOffset at ? at - DateTimeOffset.UtcNow : TimeSpan.Zero);
+        if (wait < TimeSpan.Zero) wait = TimeSpan.Zero;
+        return new UsageResponse(resp.StatusCode, await resp.Content.ReadAsStringAsync(ct), wait);
+    }
+}
+
 /// <summary>Claude usage via the claude.ai OAuth session that Claude Code stores in ~/.claude/.credentials.json.</summary>
 sealed class ClaudeProvider : IUsageProvider
 {
@@ -86,14 +99,16 @@ sealed class ClaudeProvider : IUsageProvider
             if (expired && allowTokenRefresh)
                 access = await RefreshAsync(root, oauth, http, ct);
 
-            var (status, body) = await GetUsageAsync(http, access, ct);
+            var (status, body, retryAfter) = await GetUsageAsync(http, access, ct);
             if (status == HttpStatusCode.Unauthorized && allowTokenRefresh && !expired)
             {
                 access = await RefreshAsync(root, oauth, http, ct);
-                (status, body) = await GetUsageAsync(http, access, ct);
+                (status, body, retryAfter) = await GetUsageAsync(http, access, ct);
             }
             if (status == HttpStatusCode.Unauthorized)
                 throw new Exception("session expired; open Claude Code to sign in again");
+            if (status == HttpStatusCode.TooManyRequests)
+                return new UsageSnapshot { Service = Name, Plan = plan, Error = "rate limited", RateLimited = true, RetryAfter = retryAfter };
             if (status != HttpStatusCode.OK)
                 throw new Exception($"HTTP {(int)status}: {JsonFiles.Trim(body)}");
 
@@ -116,13 +131,13 @@ sealed class ClaudeProvider : IUsageProvider
         return mult is null ? name : $"{name} {mult}";
     }
 
-    static async Task<(HttpStatusCode, string)> GetUsageAsync(HttpClient http, string access, CancellationToken ct)
+    static async Task<UsageResponse> GetUsageAsync(HttpClient http, string access, CancellationToken ct)
     {
         using var req = new HttpRequestMessage(HttpMethod.Get, UsageUrl);
         req.Headers.TryAddWithoutValidation("Authorization", "Bearer " + access);
         req.Headers.TryAddWithoutValidation("anthropic-beta", "oauth-2025-04-20");
         using var resp = await http.SendAsync(req, ct);
-        return (resp.StatusCode, await resp.Content.ReadAsStringAsync(ct));
+        return await UsageResponse.ReadAsync(resp, ct);
     }
 
     static async Task<string> RefreshAsync(JsonObject root, JsonObject oauth, HttpClient http, CancellationToken ct)
@@ -258,14 +273,16 @@ sealed class CodexProvider : IUsageProvider
             if (expired && allowTokenRefresh)
                 access = await RefreshAsync(root, tokens, http, ct);
 
-            var (status, body) = await GetUsageAsync(http, access, account, ct);
+            var (status, body, retryAfter) = await GetUsageAsync(http, access, account, ct);
             if (status == HttpStatusCode.Unauthorized && allowTokenRefresh && !expired)
             {
                 access = await RefreshAsync(root, tokens, http, ct);
-                (status, body) = await GetUsageAsync(http, access, account, ct);
+                (status, body, retryAfter) = await GetUsageAsync(http, access, account, ct);
             }
             if (status == HttpStatusCode.Unauthorized)
                 throw new Exception("session expired; run: codex login");
+            if (status == HttpStatusCode.TooManyRequests)
+                return new UsageSnapshot { Service = Name, Error = "rate limited", RateLimited = true, RetryAfter = retryAfter };
             if (status != HttpStatusCode.OK)
                 throw new Exception($"HTTP {(int)status}: {JsonFiles.Trim(body)}");
 
@@ -284,13 +301,13 @@ sealed class CodexProvider : IUsageProvider
         }
     }
 
-    static async Task<(HttpStatusCode, string)> GetUsageAsync(HttpClient http, string access, string? account, CancellationToken ct)
+    static async Task<UsageResponse> GetUsageAsync(HttpClient http, string access, string? account, CancellationToken ct)
     {
         using var req = new HttpRequestMessage(HttpMethod.Get, UsageUrl);
         req.Headers.TryAddWithoutValidation("Authorization", "Bearer " + access);
         if (!string.IsNullOrEmpty(account)) req.Headers.TryAddWithoutValidation("ChatGPT-Account-Id", account);
         using var resp = await http.SendAsync(req, ct);
-        return (resp.StatusCode, await resp.Content.ReadAsStringAsync(ct));
+        return await UsageResponse.ReadAsync(resp, ct);
     }
 
     static async Task<string> RefreshAsync(JsonObject root, JsonObject tokens, HttpClient http, CancellationToken ct)
