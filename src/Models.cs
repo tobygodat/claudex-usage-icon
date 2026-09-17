@@ -12,6 +12,9 @@ sealed class UsageSnapshot
     public string? Plan { get; init; }
     public List<UsageWindow> Windows { get; init; } = new();
     public string? Error { get; init; }
+    /// <summary>Set on HTTP 429. Nonzero when the server sent a Retry-After header.</summary>
+    public bool RateLimited { get; init; }
+    public TimeSpan RetryAfter { get; init; }
     public DateTimeOffset FetchedAt { get; init; } = DateTimeOffset.Now;
 
     /// <summary>The window shown as the big number in the tray icon (shortest window).</summary>

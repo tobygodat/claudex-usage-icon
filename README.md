@@ -20,6 +20,10 @@ or the classic ChatGPT green (#10A37F). The colours are constant; they do not ch
 * Right-click for the menu: refresh, show % remaining instead of % used, icon style,
   poll interval, hide either icon, open the web usage pages, start with Windows, quit.
 * `!` instead of a number means an error (hover to read it).
+* Polling is every 5 minutes by default (menu offers 5 to 30). The usage endpoints are meant for
+  on-demand reads and answer HTTP 429 when hit every minute; on a 429 the app backs off
+  5, 10, 20, 40 then 60 minutes (or longer if the server sends `Retry-After`) and the tooltip
+  shows when it will try again.
 * **Icon style** also offers logo-inspired badges (a starburst for Claude, a hexagon for Codex),
   a plain number in the service colour, or plain two stacked numbers (5-hour over weekly) for
   plans that have both windows.
