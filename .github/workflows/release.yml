@@ -1,0 +1,38 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Publish (needs .NET 8 Desktop Runtime on the target machine, ~200 KB)
+        run: dotnet publish src/ClaudexUsage.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -p:DebugType=none -o out/fd
+
+      - name: Publish (self-contained, no runtime needed, ~70 MB)
+        run: dotnet publish src/ClaudexUsage.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=none -o out/sc
+
+      - name: Rename artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force release | Out-Null
+          Copy-Item out/fd/ClaudexUsage.exe release/ClaudexUsage.exe
+          Copy-Item out/sc/ClaudexUsage.exe release/ClaudexUsage-standalone.exe
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/ClaudexUsage.exe
+            release/ClaudexUsage-standalone.exe
+          generate_release_notes: true

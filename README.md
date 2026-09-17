@@ -66,3 +66,12 @@ from the menu, or just drag them out of the `^` flyout onto the taskbar.
 ClaudexUsage.exe --dump report.txt         # fetch once, write a plain-text report (no secrets)
 ClaudexUsage.exe --render-test icons.png   # render sample icons at several sizes
 ```
+
+## Download
+
+Pre-built binaries are attached to each [GitHub Release](https://github.com/tobygodat/claudex-usage-icon/releases):
+
+* `ClaudexUsage.exe` — small; needs the .NET 8 Desktop Runtime.
+* `ClaudexUsage-standalone.exe` — larger; bundles the runtime, runs anywhere.
+
+Releases are built by GitHub Actions whenever a `v*` tag is pushed.
