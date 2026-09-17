@@ -29,13 +29,48 @@ sealed class TrayApp : ApplicationContext
     DetailsForm? details;
     bool fetching;
 
-    public TrayApp()
+    /// <param name="menuShot">Debug only: path of a PNG to save a screenshot of the right-click menu to, then exit.</param>
+    public TrayApp(string? menuShot = null)
     {
         http.DefaultRequestHeaders.UserAgent.ParseAdd("ClaudexUsage/1.0");
+        MenuTheme.Apply(menu);
         menu.Opening += (_, _) => BuildMenu();
 
         slots.Add(MakeSlot(new ClaudeProvider()));
         slots.Add(MakeSlot(new CodexProvider()));
+
+        if (menuShot is not null)
+        {
+            // Debug: open the menu over sample data, screenshot it, and quit. No tray icons, no network.
+            slots[0].Last = SampleSnapshot("Claude", "Max 5x", 37, 12);
+            slots[1].Last = SampleSnapshot("Codex", "Plus", 62, 48);
+            menu.AutoClose = false; // a process with no foreground window would otherwise lose the menu at once
+            var shot = new System.Windows.Forms.Timer { Interval = 400 };
+            shot.Tick += (_, _) =>
+            {
+                shot.Stop();
+                var at = new Point(300, 200);
+                menu.Show(at);
+                var wait = new System.Windows.Forms.Timer { Interval = 700 };
+                wait.Tick += (_, _) =>
+                {
+                    wait.Stop();
+                    using (var bmp = new Bitmap(menu.Width, menu.Height))
+                    {
+                        menu.DrawToBitmap(bmp, new Rectangle(0, 0, menu.Width, menu.Height));
+                        bmp.Save(menuShot, System.Drawing.Imaging.ImageFormat.Png);
+                    }
+                    File.WriteAllText(Path.ChangeExtension(menuShot, ".txt"),
+                        $"bounds={menu.Bounds} visible={menu.Visible} dpi={menu.DeviceDpi} rounded={MenuTheme.RoundedCorners} screen={Screen.PrimaryScreen?.Bounds}");
+                    menu.Close();
+                    ExitThread();
+                };
+                wait.Start();
+            };
+            shot.Start();
+            return;
+        }
+
         ApplyVisibility();
         foreach (var s in slots) UpdateIcon(s);
 
@@ -51,6 +86,18 @@ sealed class TrayApp : ApplicationContext
         SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
         SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
     }
+
+    static UsageSnapshot SampleSnapshot(string service, string plan, double fiveHour, double sevenDay) => new()
+    {
+        Service = service,
+        Plan = plan,
+        Windows =
+        {
+            new UsageWindow("5h", fiveHour, DateTimeOffset.Now.AddHours(2).AddMinutes(10), TimeSpan.FromHours(5)),
+            new UsageWindow("7d", sevenDay, DateTimeOffset.Now.AddDays(3).AddHours(4), TimeSpan.FromDays(7)),
+        },
+        FetchedAt = DateTimeOffset.Now.AddMinutes(-2),
+    };
 
     Slot MakeSlot(IUsageProvider provider)
     {
@@ -136,72 +183,35 @@ sealed class TrayApp : ApplicationContext
         foreach (var s in slots) UpdateIcon(s);
     }
 
-    /// <summary>Badge silhouette for the current icon style: full-bleed squares by default, logo shapes on request.</summary>
-    BadgeShape ShapeFor(IUsageProvider provider) => settings.IconStyle switch
+    /// <summary>
+    /// What the ring icon shows for a service: the digits, the ring colour and how far the arc sweeps.
+    /// Shared by the tray icon and the menu header. The ring always tracks "% used" so it closes as usage
+    /// fills, even when the digits show % remaining. Loading shows a dash, an error shows "!", both on an empty track.
+    /// </summary>
+    public static (IconRow[] rows, Color fill, double fraction) RingIcon(string name, UsageSnapshot? snap, bool showRemaining, bool light)
     {
-        "logo" => provider.Shape,
-        "plain" or "two-rows" => BadgeShape.None,
-        _ => BadgeShape.Square,
-    };
+        var fill = Palette.BadgeFill(name, light);
+        var textColor = Palette.RingText(light);
+        if (snap is null)
+            return (new[] { new IconRow("–", textColor) }, fill, 0);
+        if (snap.Error is not null || snap.Primary is null)
+            return (new[] { new IconRow("!", textColor) }, fill, 0);
+        var p = snap.Primary;
+        string value = Math.Round(showRemaining ? p.RemainingPercent : p.UsedPercent).ToString();
+        return (new[] { new IconRow(value, textColor) }, fill, p.UsedPercent / 100.0);
+    }
 
     void UpdateIcon(Slot slot)
     {
         int size = Math.Clamp(SystemInformation.SmallIconSize.Width, 16, 64);
         var snap = slot.Last;
         string name = slot.Provider.Name;
-        var brand = Palette.Brand(name, lightTheme);
-        string style = settings.IconStyle; // "square" (default) | "logo" | "plain" | "two-rows"
-        bool badge = style is not ("plain" or "two-rows");
-        var shape = ShapeFor(slot.Provider);
-        Color? fill = null;
-        IconRow[] rows;
-        string tip;
+        var (rows, fill, fraction) = RingIcon(name, snap, settings.ShowRemaining, lightTheme);
+        string tip = snap is null ? $"{name}: loading..."
+            : snap.Error is not null || snap.Primary is null ? $"{name}: {snap.Error ?? "no data"}"
+            : Tooltip(slot.Provider, snap);
 
-        string Value(UsageWindow? w) => w is null ? "–"
-            : Math.Round(settings.ShowRemaining ? w.RemainingPercent : w.UsedPercent).ToString();
-        IconRow PlainRow(UsageWindow? w) => Palette.Row(Value(w), w?.UsedPercent ?? 0, brand, lightTheme);
-
-        if (snap is null)
-        {
-            fill = Palette.BadgeFill(name, lightTheme);
-            var dash = new IconRow("–", badge ? Color.White : brand);
-            rows = style == "two-rows" ? new[] { dash, dash } : new[] { dash };
-            tip = $"{name}: loading...";
-        }
-        else if (snap.Error is not null || snap.Primary is null)
-        {
-            // Error: same service colour (the tile never changes colour), just a "!" instead of a number.
-            fill = Palette.BadgeFill(name, lightTheme);
-            rows = new[] { new IconRow("!", badge ? Color.White : brand) };
-            tip = $"{name}: {snap.Error ?? "no data"}";
-        }
-        else if (badge)
-        {
-            // Logo-shaped badge: the shape says which service, the fill colour says how close to the limit.
-            var p = snap.Primary;
-            var (f, textColor) = Palette.Badge(p.UsedPercent, name, lightTheme);
-            fill = f;
-            rows = new[] { new IconRow(Value(p), textColor) };
-            tip = Tooltip(slot.Provider, snap);
-        }
-        else if (style == "two-rows")
-        {
-            // Top = 5-hour window, bottom = 7-day window. A plan with only one of them gets a single big number.
-            var top = snap.FiveHour;
-            var bottom = snap.SevenDay ?? (top is null ? snap.Primary : snap.Secondary);
-            rows = top is null ? new[] { PlainRow(bottom) }
-                 : bottom is null ? new[] { PlainRow(top) }
-                 : new[] { PlainRow(top), PlainRow(bottom) };
-            tip = Tooltip(slot.Provider, snap);
-        }
-        else
-        {
-            // Plain: one number, the shortest account-wide window (5-hour for Claude, weekly for a Codex plan without one).
-            rows = new[] { PlainRow(snap.Primary) };
-            tip = Tooltip(slot.Provider, snap);
-        }
-
-        var icon = IconRenderer.Render(size, rows, shape, fill);
+        var icon = IconRenderer.Render(size, rows, BadgeShape.Ring, fill, fraction);
         slot.Icon.Icon = icon;
         slot.Current?.Dispose();
         slot.Current = icon;
@@ -221,68 +231,42 @@ sealed class TrayApp : ApplicationContext
         return line1 + line2;
     }
 
-    string Summary(Slot slot)
-    {
-        var snap = slot.Last;
-        if (snap is null) return $"{slot.Provider.Name}: loading...";
-        if (snap.Error is not null) return $"{slot.Provider.Name}: {snap.Error}";
-        bool rem = settings.ShowRemaining;
-        var parts = snap.Windows.Take(2)
-            .Select(w => $"{w.Label} {Math.Round(rem ? w.RemainingPercent : w.UsedPercent)}% {(rem ? "left" : "used")}");
-        return $"{slot.Provider.Name}: {string.Join("  ·  ", parts)}";
-    }
-
     // ---- UI ---------------------------------------------------------------------------------
 
     void ToggleDetails()
     {
-        details ??= new DetailsForm(Data, () => settings.ShowRemaining, () => _ = RefreshAllAsync(), lightTheme, ShapeFor);
+        details ??= new DetailsForm(Data, () => settings.ShowRemaining, () => _ = RefreshAllAsync(), lightTheme, _ => BadgeShape.Ring);
         if (details.Visible) details.Hide();
         else details.ShowNear(Cursor.Position);
     }
 
+    /// <summary>
+    /// Right-click menu. Top: one header row per service with its live ring, plan, windows and next reset.
+    /// Then the actions, the display settings (submenus for the two-state choices) and Quit.
+    /// </summary>
     void BuildMenu()
     {
         menu.Items.Clear();
         foreach (var s in slots)
-            menu.Items.Add(new ToolStripMenuItem(Summary(s)) { Enabled = false });
+            menu.Items.Add(new UsageHeaderItem(s.Provider, s.Last, settings.ShowRemaining));
         menu.Items.Add(new ToolStripSeparator());
 
-        menu.Items.Add("Refresh now", null, (_, _) => _ = RefreshAllAsync());
-        menu.Items.Add("Show details", null, (_, _) => ToggleDetails());
-
-        var open = new ToolStripMenuItem("Open usage page");
-        foreach (var s in slots)
-        {
-            var url = s.Provider.UsagePageUrl;
-            open.DropDownItems.Add(s.Provider.Name, null, (_, _) => OpenUrl(url));
-        }
-        menu.Items.Add(open);
+        var newest = slots.Where(s => s.Last is not null).Select(s => s.Last!.FetchedAt).DefaultIfEmpty(DateTimeOffset.MinValue).Max();
+        string refreshLabel = newest == DateTimeOffset.MinValue ? "Refresh now" : $"Refresh now   ·   updated {Fmt.Ago(newest)}";
+        menu.Items.Add(MenuTheme.Item(refreshLabel, (_, _) => _ = RefreshAllAsync()));
         menu.Items.Add(new ToolStripSeparator());
 
-        var rem = new ToolStripMenuItem("Show % remaining instead of % used") { Checked = settings.ShowRemaining, CheckOnClick = true };
+        var rem = MenuTheme.Item("Show % remaining instead of % used");
+        rem.Checked = settings.ShowRemaining;
+        rem.CheckOnClick = true;
         rem.CheckedChanged += (_, _) => { settings.ShowRemaining = rem.Checked; settings.Save(); RedrawAll(); details?.RefreshContents(); };
         menu.Items.Add(rem);
 
-        var style = new ToolStripMenuItem("Icon style");
-        foreach (var (label, key) in new[]
-                 {
-                     ("Solid square (orange = Claude, green = Codex)", "square"),
-                     ("Logo shapes (starburst = Claude, hexagon = Codex)", "logo"),
-                     ("Plain number in service colour", "plain"),
-                     ("Plain, two rows: 5-hour over weekly", "two-rows"),
-                 })
-        {
-            var item = new ToolStripMenuItem(label) { Checked = settings.IconStyle == key };
-            string captured = key;
-            item.Click += (_, _) => { settings.IconStyle = captured; settings.Save(); RedrawAll(); };
-            style.DropDownItems.Add(item);
-        }
-        menu.Items.Add(style);
-
-        var icons = new ToolStripMenuItem("Tray icons");
-        var showClaude = new ToolStripMenuItem("Claude") { Checked = settings.ShowClaude, CheckOnClick = true };
-        var showCodex = new ToolStripMenuItem("Codex") { Checked = settings.ShowCodex, CheckOnClick = true };
+        var icons = Submenu("Tray icons");
+        var showClaude = MenuTheme.Item("Claude");
+        showClaude.Checked = settings.ShowClaude; showClaude.CheckOnClick = true;
+        var showCodex = MenuTheme.Item("Codex");
+        showCodex.Checked = settings.ShowCodex; showCodex.CheckOnClick = true;
         showClaude.CheckedChanged += (_, _) =>
         {
             if (!showClaude.Checked && !settings.ShowCodex) { showClaude.Checked = true; return; }
@@ -297,34 +281,40 @@ sealed class TrayApp : ApplicationContext
         icons.DropDownItems.Add(showCodex);
         menu.Items.Add(icons);
 
-        var interval = new ToolStripMenuItem("Refresh every");
+        var interval = Submenu("Refresh every");
         foreach (var (label, secs) in new[] { ("5 minutes", 300), ("10 minutes", 600), ("15 minutes", 900), ("30 minutes", 1800) })
         {
-            var item = new ToolStripMenuItem(label) { Checked = settings.PollSeconds == secs };
+            var item = MenuTheme.Item(label);
+            item.Checked = settings.PollSeconds == secs;
             int captured = secs;
             item.Click += (_, _) => { settings.PollSeconds = captured; settings.Save(); timer.Interval = captured * 1000; };
             interval.DropDownItems.Add(item);
         }
         menu.Items.Add(interval);
 
-        var startup = new ToolStripMenuItem("Start with Windows") { Checked = IsStartupEnabled(), CheckOnClick = true };
+        var startup = MenuTheme.Item("Start with Windows");
+        startup.Checked = IsStartupEnabled();
+        startup.CheckOnClick = true;
         startup.CheckedChanged += (_, _) => SetStartup(startup.Checked);
         menu.Items.Add(startup);
 
-        menu.Items.Add("Always show icons in taskbar corner", null, (_, _) =>
+        menu.Items.Add(MenuTheme.Item("Always show icons in taskbar corner", (_, _) =>
         {
             if (!PromoteIcons())
                 MessageBox.Show("Windows has not registered the icons yet. Try again in a few seconds, or drag the icons out of the ^ overflow menu.",
                     "Claudex Usage", MessageBoxButtons.OK, MessageBoxIcon.Information);
-        });
+        }));
 
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Quit", null, (_, _) => ExitThread());
+        menu.Items.Add(MenuTheme.Item("Quit", (_, _) => ExitThread()));
     }
 
-    static void OpenUrl(string url)
+    /// <summary>A menu entry with a submenu, styled to match the root menu (the renderer is inherited; padding and corners are not).</summary>
+    static ToolStripMenuItem Submenu(string text)
     {
-        try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); } catch { }
+        var item = MenuTheme.Item(text);
+        MenuTheme.Style(item.DropDown);
+        return item;
     }
 
     // ---- system integration -----------------------------------------------------------------

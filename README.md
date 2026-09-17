@@ -17,16 +17,16 @@ or the classic ChatGPT green (#10A37F). The colours are constant; they do not ch
   (Codex-Spark) and Anthropic's internal experiment keys are ignored.
 * Hover an icon for a tooltip with every window and the next reset time.
 * Left-click an icon for a details popup (all windows, progress bars, reset countdowns).
-* Right-click for the menu: refresh, show % remaining instead of % used, icon style,
-  poll interval, hide either icon, open the web usage pages, start with Windows, quit.
+* Right-click for the dark menu: a live summary of each service (ring, plan, every window, next
+  reset), then refresh, show % remaining instead of % used, hide either icon, poll interval,
+  start with Windows, keep icons in the taskbar corner, quit.
 * `!` instead of a number means an error (hover to read it).
 * Polling is every 5 minutes by default (menu offers 5 to 30). The usage endpoints are meant for
   on-demand reads and answer HTTP 429 when hit every minute; on a 429 the app backs off
   5, 10, 20, 40 then 60 minutes (or longer if the server sends `Retry-After`) and the tooltip
   shows when it will try again.
-* **Icon style** also offers logo-inspired badges (a starburst for Claude, a hexagon for Codex),
-  a plain number in the service colour, or plain two stacked numbers (5-hour over weekly) for
-  plans that have both windows.
+* The icon is a white number inside a ring in the service colour (orange = Claude, green = Codex).
+  The ring closes clockwise as the window fills up.
 
 ## How it gets the data
 

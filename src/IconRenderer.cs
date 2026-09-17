@@ -18,11 +18,17 @@ enum BadgeShape
     Starburst,
     /// <summary>Pointy-top hexagon, after the OpenAI hexagonal knot.</summary>
     Hexagon,
+    /// <summary>
+    /// Hollow circle in the service colour that closes as usage fills: a faint full track plus an arc
+    /// from 12 o'clock, clockwise, whose sweep is the used fraction. No fill, so the digits sit on the taskbar.
+    /// </summary>
+    Ring,
 }
 
 /// <summary>
 /// Draws the tray icon. Layouts:
 ///  * badge: a filled logo-shaped silhouette with one big number inside;
+///  * ring: a progress ring in the service colour around a white number;
 ///  * plain: one number (or two stacked rows) in the service colour with no shape.
 /// </summary>
 static class IconRenderer
@@ -30,9 +36,10 @@ static class IconRenderer
     [DllImport("user32.dll", SetLastError = true)]
     static extern bool DestroyIcon(IntPtr handle);
 
-    public static Icon Render(int size, IconRow[] rows, BadgeShape shape = BadgeShape.None, Color? badgeFill = null)
+    /// <param name="ringFraction">For <see cref="BadgeShape.Ring"/>: how much of the circle to draw, 0..1.</param>
+    public static Icon Render(int size, IconRow[] rows, BadgeShape shape = BadgeShape.None, Color? badgeFill = null, double ringFraction = 0)
     {
-        using var bmp = RenderBitmap(size, rows, shape, badgeFill);
+        using var bmp = RenderBitmap(size, rows, shape, badgeFill, ringFraction);
         IntPtr h = bmp.GetHicon();
         try
         {
@@ -45,7 +52,7 @@ static class IconRenderer
         }
     }
 
-    public static Bitmap RenderBitmap(int size, IconRow[] rows, BadgeShape shape = BadgeShape.None, Color? badgeFill = null)
+    public static Bitmap RenderBitmap(int size, IconRow[] rows, BadgeShape shape = BadgeShape.None, Color? badgeFill = null, double ringFraction = 0)
     {
         var bmp = new Bitmap(size, size, PixelFormat.Format32bppArgb);
         using var g = Graphics.FromImage(bmp);
@@ -54,7 +61,12 @@ static class IconRenderer
         g.PixelOffsetMode = PixelOffsetMode.HighQuality;
 
         Rectangle textArea;
-        if (shape != BadgeShape.None)
+        if (shape == BadgeShape.Ring)
+        {
+            DrawRing(g, size, badgeFill ?? Color.Gray, ringFraction);
+            textArea = TextRectFor(shape, size);
+        }
+        else if (shape != BadgeShape.None)
         {
             // Use the entire slot: Windows already pads tray icons, so no margin of our own.
             var box = new RectangleF(0f, 0f, size, size);
@@ -83,6 +95,28 @@ static class IconRenderer
             DrawRow(g, rows[1], new Rectangle(textArea.X, textArea.Y + rowH + gap, textArea.Width, textArea.Height - rowH - gap), size);
         }
         return bmp;
+    }
+
+    // ---- ring -------------------------------------------------------------------------------
+
+    /// <summary>Stroke width of the progress ring: an eighth of the icon, so 2 px at 16 px and 4 px at 32 px.</summary>
+    public static float RingStroke(float size) => Math.Max(1.5f, size * 0.125f);
+
+    /// <summary>
+    /// Faint full circle (the track) with a solid arc over it. Both are full bleed: the outer edge of the
+    /// stroke touches the icon slot. The arc starts at 12 o'clock and runs clockwise for <paramref name="fraction"/> of a turn.
+    /// </summary>
+    public static void DrawRing(Graphics g, float size, Color color, double fraction)
+    {
+        float sw = RingStroke(size);
+        var box = new RectangleF(sw / 2f, sw / 2f, size - sw, size - sw);
+        using (var track = new Pen(Color.FromArgb(72, color), sw))
+            g.DrawEllipse(track, box);
+        float sweep = (float)(360.0 * Math.Clamp(fraction, 0, 1));
+        if (sweep <= 0f) return;
+        using var arc = new Pen(color, sw) { StartCap = LineCap.Flat, EndCap = LineCap.Flat };
+        if (sweep >= 359.5f) g.DrawEllipse(arc, box);
+        else g.DrawArc(arc, box, -90f, sweep);
     }
 
     // ---- badge geometry ---------------------------------------------------------------------
@@ -165,6 +199,11 @@ static class IconRenderer
                 // The stretched hexagon is full width between 22 % and 78 % of its height and only
                 // narrows gently above that, so the digits can be 0.6·size tall.
                 h = 0.60f * size; w = 0.88f * size;
+                break;
+            case BadgeShape.Ring:
+                // Inner edge of the stroke is at radius 0.375·size. A 0.64 × 0.50 box has its corners at
+                // radius 0.41·size, so two heavy digits only graze the ring at their rounded corners.
+                h = 0.50f * size; w = 0.64f * size;
                 break;
             default:
                 h = 0.6f * size; w = 0.8f * size;
@@ -290,7 +329,7 @@ static class IconRenderer
         (string text, int used)[] samples = { ("7", 7), ("37", 37), ("78", 78), ("96", 96), ("100", 100), ("–", 0), ("!", -1) };
         var shapes = new[] { ("Claude", BadgeShape.Square), ("Codex", BadgeShape.Square) };
         int cell = 44, pad = 8;
-        int cols = samples.Length * 2 + 2;
+        int cols = samples.Length * 4 + 2;
         int width = pad + cols * cell + pad;
         int height = pad + sizes.Length * cell * 2 + pad;
         using var sheet = new Bitmap(width, height);
@@ -329,6 +368,18 @@ static class IconRenderer
                     g.DrawImageUnscaled(bmp, pad + col * cell + (cell - sizes[si]) / 2, yBase);
                     col++;
                 }
+                // ring style examples: the arc closes as usage fills
+                foreach (var (text, used) in samples)
+                {
+                    foreach (var (service, _) in shapes)
+                    {
+                        var row = new IconRow(text, Palette.RingText(light));
+                        using var bmp = RenderBitmap(sizes[si], new[] { row }, BadgeShape.Ring,
+                            Palette.BadgeFill(service, light), Math.Max(0, used) / 100.0);
+                        g.DrawImageUnscaled(bmp, pad + col * cell + (cell - sizes[si]) / 2, yBase);
+                        col++;
+                    }
+                }
             }
         }
         sheet.Save(path, ImageFormat.Png);
@@ -356,6 +407,9 @@ static class Palette
         "Codex" => Color.FromArgb(0x10, 0xA3, 0x7F),
         _ => Color.Gray,
     };
+
+    /// <summary>Digit colour for the ring style: white on a dark taskbar, near-black on a light one (white would vanish).</summary>
+    public static Color RingText(bool light) => light ? Color.FromArgb(0x1F, 0x1F, 0x1E) : Color.White;
 
     public static Color Critical(bool light) => light ? Color.FromArgb(0xD1, 0x24, 0x2B) : Color.FromArgb(0xE5, 0x48, 0x4D);
     public static Color Warning(bool light) => light ? Color.FromArgb(0xE0, 0x8A, 0x00) : Color.FromArgb(0xF2, 0xA9, 0x00);

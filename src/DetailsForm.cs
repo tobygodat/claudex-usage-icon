@@ -133,9 +133,21 @@ sealed class DetailsForm : Form
         foreach (var (provider, snap) in getData())
         {
             // Title row: the service's badge silhouette + name, plan on the right.
-            using (var marker = new SolidBrush(Palette.BadgeFill(provider.Name, lightTheme)))
-            using (var path = IconRenderer.ShapePath(MarkerShape(provider), new RectangleF(pad, y + S(6), S(14), S(14))))
+            var markerShape = MarkerShape(provider);
+            if (markerShape == BadgeShape.Ring)
+            {
+                // Same progress ring as the tray icon, at marker size.
+                var saved = g.Transform;
+                g.TranslateTransform(pad, y + S(6));
+                IconRenderer.DrawRing(g, S(14), Palette.BadgeFill(provider.Name, lightTheme), (snap?.Primary?.UsedPercent ?? 0) / 100.0);
+                g.Transform = saved;
+            }
+            else
+            {
+                using var marker = new SolidBrush(Palette.BadgeFill(provider.Name, lightTheme));
+                using var path = IconRenderer.ShapePath(markerShape, new RectangleF(pad, y + S(6), S(14), S(14)));
                 g.FillPath(marker, path);
+            }
             g.DrawString(provider.Name, titleFont, fgBrush, new RectangleF(pad + S(20), y, w, S(26)), left);
             if (snap?.Plan is string plan)
                 g.DrawString(plan, smallFont, mutedBrush, new RectangleF(pad, y, w, S(26)), right);
